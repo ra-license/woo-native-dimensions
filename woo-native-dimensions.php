@@ -2,13 +2,19 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.13
+ * Version: 1.14
  * Author: Your Dev Team
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+
+// v1.14: trivial version bump only, to prove the GitHub self-update
+// mechanism actually shows an "Update Available" notice on a real site —
+// no functional change. Per Room Planner's own precedent (v7.17.0), this
+// mechanism was never trustworthy just because the code looked right; it
+// needed a real, live, watched test before relying on it.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
