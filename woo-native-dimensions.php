@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.14
+ * Version: 1.15
  * Author: Your Dev Team
  */
 
@@ -590,6 +590,38 @@ function rma_additional_property_value( $markup, $name ) {
     return null;
 }
 
+/**
+ * When the AEO Preview finds no Product schema at all, this points at the
+ * specific likely cause instead of a generic hint — checked live twice now
+ * (ABC Furniture Retailer and Kemper), both times traced to an SEO plugin's
+ * own "disable WooCommerce's native schema" setting. Read-only detection
+ * only: this never changes another plugin's settings itself — see the
+ * writeup for why that's a deliberate boundary, not an oversight.
+ *
+ * Detects by plugin file path (the standard, documented slug for each),
+ * not by internal option names, since those vary by version and aren't
+ * worth coupling to. Not yet verified against a live Yoast or Rank Math
+ * install this session — only the SEOPress path has been confirmed live,
+ * twice.
+ */
+function rma_seo_plugin_disable_hint() {
+    if ( ! function_exists( 'is_plugin_active' ) ) {
+        require_once ABSPATH . 'wp-admin/includes/plugin.php';
+    }
+
+    if ( is_plugin_active( 'wp-seopress/seopress.php' ) || is_plugin_active( 'wp-seopress-pro/seopress-pro.php' ) ) {
+        return __( 'SEOPress is active on this site. Confirmed live cause on two sites so far: SEO → PRO → WooCommerce → "Remove default JSON-LD structured data (WooCommerce 3+)" — check whether that box is checked with no replacement schema built under SEO → Schemas.', 'rma' );
+    }
+    if ( is_plugin_active( 'wordpress-seo/wp-seo.php' ) || is_plugin_active( 'wordpress-seo-premium/wp-seo-premium.php' ) ) {
+        return __( 'Yoast SEO is active on this site. Not yet confirmed live, but check its WooCommerce-related SEO settings for anything disabling native Product schema.', 'rma' );
+    }
+    if ( is_plugin_active( 'seo-by-rank-math/rank-math.php' ) ) {
+        return __( 'Rank Math is active on this site. Not yet confirmed live, but check its schema/WooCommerce settings for anything disabling native Product schema.', 'rma' );
+    }
+
+    return '';
+}
+
 function rma_render_aeo_preview_page() {
     if ( ! current_user_can( 'manage_woocommerce' ) ) {
         return;
@@ -698,7 +730,11 @@ function rma_render_aeo_preview_page() {
                 <div class="notice notice-error inline">
                     <p>
                         <strong><?php esc_html_e( 'No Product structured data was found on the live page.', 'rma' ); ?></strong><br />
-                        <?php esc_html_e( 'The page fetched successfully, but no Product entity showed up in its JSON-LD. This means WooCommerce\'s own schema output isn\'t reaching this page — a theme or another plugin (an SEO plugin\'s "remove default structured data" option is a common cause) may be disabling it. This plugin only extends that data; it can\'t create it from nothing. Nothing from this plugin (or WooCommerce core) is reaching search engines or AI crawlers for this product until that\'s fixed.', 'rma' ); ?>
+                        <?php esc_html_e( 'The page fetched successfully, but no Product entity showed up in its JSON-LD. This means WooCommerce\'s own schema output isn\'t reaching this page — a theme or another plugin may be disabling it. This plugin only extends that data; it can\'t create it from nothing. Nothing from this plugin (or WooCommerce core) is reaching search engines or AI crawlers for this product until that\'s fixed.', 'rma' ); ?>
+                        <?php $rma_seo_hint = rma_seo_plugin_disable_hint(); ?>
+                        <?php if ( $rma_seo_hint ) : ?>
+                            <br /><br /><strong><?php esc_html_e( 'Likely cause on this site:', 'rma' ); ?></strong> <?php echo esc_html( $rma_seo_hint ); ?>
+                        <?php endif; ?>
                     </p>
                 </div>
 
