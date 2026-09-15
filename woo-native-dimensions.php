@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
- * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.15
+ * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
+ * Version: 1.16
  * Author: Your Dev Team
  */
 
@@ -191,6 +191,107 @@ function render_native_woo_dimensions_strict_string() {
     $html .= '</div>'; // Close main wrapper
 
     return $html;
+}
+
+/**
+ * Category-page structured data: CollectionPage + ItemList.
+ *
+ * Confirmed live on 2026-09-15 (kemperhomefurnishings.com/living-room/sofas/)
+ * that a category archive page carries only a BreadcrumbList — no
+ * CollectionPage, no ItemList, no product count — so an AI/search retrieval
+ * system has no single machine-readable passage saying "this category has
+ * N products" the way a competitor's category page can. This closes that
+ * gap, prompted directly by a real third-party AI-agent audit transcript
+ * (Phil's own ChatGPT session) that identified category-level retrieval,
+ * not product-level schema, as the actual remaining bottleneck.
+ *
+ * Deliberately does NOT attempt the fuller "availableAtOrFrom" per-showroom
+ * inventory idea from that same transcript — that needs two real, complete,
+ * separately-addressable location entities (Somerset vs. London) to point
+ * at, and the site's current /locations/ page only has one generic
+ * FurnitureStore entity (no phone, empty geo coordinates, not
+ * location-specific). Building a per-location reference now would mean
+ * inventing an @id for an entity that doesn't really exist yet — that's a
+ * separate, template-level fix needed first, not something to guess around
+ * here. Revisit once real per-location Store entities exist.
+ *
+ * numberOfItems is pulled from the same query WooCommerce already uses to
+ * render the category page (found_posts — the true total across every
+ * page of results, per schema.org's own guidance that this need not match
+ * how many products are actually listed in itemListElement), so there's
+ * nothing to keep in sync manually. itemListElement only lists the
+ * products actually shown on the current page/results — never a separate,
+ * hidden claim beyond what's visibly on the page.
+ *
+ * Assumption not yet verified live: that the main WP_Query (checked here
+ * via the global $wp_query) is really what drives this site's product
+ * grid. True for a standard WooCommerce/theme archive template; would need
+ * a different data source if a page builder replaces the loop with its
+ * own separate query.
+ */
+add_action( 'wp_head', 'rma_output_category_structured_data', 20 );
+
+function rma_output_category_structured_data() {
+    if ( ! function_exists( 'is_product_category' ) || ! is_product_category() ) {
+        return;
+    }
+
+    global $wp_query;
+
+    $term = get_queried_object();
+    if ( ! ( $term instanceof WP_Term ) ) {
+        return;
+    }
+
+    $category_url = get_term_link( $term );
+    if ( is_wp_error( $category_url ) ) {
+        return;
+    }
+
+    $total_items = isset( $wp_query->found_posts ) ? (int) $wp_query->found_posts : 0;
+
+    $list_items = array();
+    if ( ! empty( $wp_query->posts ) ) {
+        $position = 1;
+        foreach ( $wp_query->posts as $queried_post ) {
+            $product_id = is_object( $queried_post ) ? $queried_post->ID : (int) $queried_post;
+            $permalink  = get_permalink( $product_id );
+            if ( ! $permalink ) {
+                continue;
+            }
+            $list_items[] = array(
+                '@type'    => 'ListItem',
+                'position' => $position,
+                'url'      => $permalink,
+            );
+            ++$position;
+        }
+    }
+
+    $markup = array(
+        '@context' => 'https://schema.org',
+        '@graph'   => array(
+            array(
+                '@type'      => 'CollectionPage',
+                '@id'        => $category_url . '#webpage',
+                'url'        => $category_url,
+                'name'       => $term->name,
+                'isPartOf'   => array( '@id' => home_url( '/' ) . '#website' ),
+                'mainEntity' => array( '@id' => $category_url . '#product-list' ),
+            ),
+            array(
+                '@type'           => 'ItemList',
+                '@id'             => $category_url . '#product-list',
+                'name'            => $term->name,
+                'numberOfItems'   => $total_items,
+                'itemListElement' => $list_items,
+            ),
+        ),
+    );
+
+    $markup = apply_filters( 'rma_category_structured_data', $markup, $term );
+
+    echo '<script type="application/ld+json">' . wp_json_encode( $markup, JSON_UNESCAPED_SLASHES ) . '</script>' . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput
 }
 
 /**
