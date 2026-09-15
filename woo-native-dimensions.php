@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
- * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.16
+ * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
+ * Version: 1.17
  * Author: Your Dev Team
  */
 
@@ -15,6 +15,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 // no functional change. Per Room Planner's own precedent (v7.17.0), this
 // mechanism was never trustworthy just because the code looked right; it
 // needed a real, live, watched test before relying on it.
+//
+// v1.17: adds Offer.availableAtOrFrom — real showroom location data (name,
+// address, phone), entered per-site via a new "Showroom Locations" field on
+// WooCommerce > AEO Settings, matched against each product's existing
+// "On Display in Showroom" attribute value. Not hardcoded to any one
+// client's address, since this plugin is shared across sites.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -69,6 +75,10 @@ function rma_register_settings() {
     register_setting( 'rma_settings_group', 'rma_github_update_token', 'sanitize_text_field' );
     add_settings_section( 'rma_update_settings', __( 'Auto-Update Settings', 'rma' ), 'rma_update_settings_intro_html', 'rma-settings' );
     add_settings_field( 'rma_github_update_token_field', __( 'GitHub Update Token', 'rma' ), 'rma_github_update_token_html', 'rma-settings', 'rma_update_settings' );
+
+    register_setting( 'rma_settings_group', 'rma_business_locations', 'sanitize_textarea_field' );
+    add_settings_section( 'rma_locations_settings', __( 'Showroom Locations', 'rma' ), 'rma_locations_settings_intro_html', 'rma-settings' );
+    add_settings_field( 'rma_business_locations_field', __( 'Locations', 'rma' ), 'rma_business_locations_html', 'rma-settings', 'rma_locations_settings' );
 }
 
 function rma_update_settings_intro_html() {
@@ -84,6 +94,17 @@ function rma_github_update_token_html() {
     } else {
         echo '<p class="description">' . esc_html__( 'This is a repository-scoped, read-only credential — it cannot access anything else in the GitHub account.', 'rma' ) . '</p>';
     }
+}
+
+function rma_locations_settings_intro_html() {
+    echo '<p>' . esc_html__( 'One real showroom location per line, so each product\'s "On Display in Showroom" value can be tied to the specific store that actually has it — this is what powers Offer.availableAtOrFrom in the product\'s structured data. Leave blank if this site has no physical showroom locations.', 'rma' ) . '</p>';
+    echo '<p class="description">' . esc_html__( 'Format: Name | Street Address | City | State | ZIP | Phone', 'rma' ) . '<br />' . esc_html__( 'Example: Somerset | 1755 US Hwy. 27 South | Somerset | KY | 42501 | (606) 677-0800', 'rma' ) . '</p>';
+}
+
+function rma_business_locations_html() {
+    $locations = get_option( 'rma_business_locations', '' );
+    echo '<textarea name="rma_business_locations" rows="6" style="width: 500px;" placeholder="Somerset | 1755 US Hwy. 27 South | Somerset | KY | 42501 | (606) 677-0800&#10;London | 1334 South Laurel Road | London | KY | 40744 | (606) 864-4061">' . esc_textarea( $locations ) . '</textarea>';
+    echo '<p class="description">' . esc_html__( 'The "Name" must match (or be contained in) the value used in the "On Display in Showroom" product attribute, so this plugin knows which location an in-stock product actually belongs to.', 'rma' ) . '</p>';
 }
 
 function rma_settings_page_html() {
@@ -429,6 +450,36 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
         }
     }
 
+    // Showroom location: ties this specific product's Offer to the actual
+    // physical store it's on display at (Offer.availableAtOrFrom), using
+    // the same "On Display in Showroom" attribute value already read above
+    // for the visible facts table. Only real, site-configured locations are
+    // ever used (see rma_get_business_locations()) — a product whose
+    // on-display value doesn't match any configured location gets nothing
+    // added here, never a guessed or invented location.
+    if ( ! empty( $markup['offers'] ) && ! empty( $on_display ) ) {
+        $available_at = rma_get_locations_for_display_value( $on_display );
+
+        if ( ! empty( $available_at ) ) {
+            // A single matched location is embedded as one object; multiple
+            // matches (a product on display in more than one showroom) as a
+            // list — both are valid shapes for availableAtOrFrom.
+            $available_at_value = ( 1 === count( $available_at ) ) ? $available_at[0] : $available_at;
+
+            if ( isset( $markup['offers']['@type'] ) ) {
+                if ( empty( $markup['offers']['availableAtOrFrom'] ) ) {
+                    $markup['offers']['availableAtOrFrom'] = $available_at_value;
+                }
+            } else {
+                foreach ( $markup['offers'] as $index => $offer ) {
+                    if ( is_array( $offer ) && empty( $offer['availableAtOrFrom'] ) ) {
+                        $markup['offers'][ $index ]['availableAtOrFrom'] = $available_at_value;
+                    }
+                }
+            }
+        }
+    }
+
     return $markup;
 }
 
@@ -526,6 +577,123 @@ function rma_get_business_seller_entity() {
     $seller = apply_filters( 'rma_business_seller_entity', $seller, $captured );
 
     return $seller;
+}
+
+/**
+ * Showroom location resolution.
+ *
+ * Deliberately NOT hardcoded to any one client's real address — this plugin
+ * runs on multiple sites, and a real address baked into the shared codebase
+ * as a "default" would be wrong (and confusing) everywhere except the one
+ * site it came from. Instead, each site's admin enters their own real
+ * locations once in WooCommerce > AEO Settings (a simple pipe-delimited
+ * textarea, same idea as the GitHub token field above), and this function
+ * just parses whatever is actually configured there. A site with nothing
+ * configured gets an empty array, never an invented placeholder — same
+ * "real data or nothing" rule this whole plugin follows everywhere else.
+ *
+ * Confirmed real for kemperhomefurnishings.com (2026-09-15, from the site's
+ * own visible About Us page): Somerset — 1755 US Hwy. 27 South, Somerset,
+ * KY 42501, (606) 677-0800; London — 1334 South Laurel Road, London, KY
+ * 40744, (606) 864-4061. That data is entered via the settings field on
+ * that site, not written into this file.
+ */
+function rma_get_business_locations() {
+    static $locations = null;
+
+    if ( null !== $locations ) {
+        return $locations;
+    }
+
+    $locations = array();
+    $raw       = get_option( 'rma_business_locations', '' );
+
+    if ( empty( trim( $raw ) ) ) {
+        return $locations = apply_filters( 'rma_business_locations', $locations );
+    }
+
+    $lines = preg_split( '/\r\n|\r|\n/', $raw );
+
+    foreach ( $lines as $line ) {
+        $line = trim( $line );
+        if ( '' === $line ) {
+            continue;
+        }
+
+        $fields = array_map( 'trim', explode( '|', $line ) );
+        $name   = isset( $fields[0] ) ? $fields[0] : '';
+
+        if ( '' === $name ) {
+            continue;
+        }
+
+        $street  = isset( $fields[1] ) ? $fields[1] : '';
+        $city    = isset( $fields[2] ) ? $fields[2] : '';
+        $state   = isset( $fields[3] ) ? $fields[3] : '';
+        $zip     = isset( $fields[4] ) ? $fields[4] : '';
+        $phone   = isset( $fields[5] ) ? $fields[5] : '';
+
+        $entity = array(
+            '@type'   => 'FurnitureStore',
+            'name'    => $name,
+            'address' => array(
+                '@type'           => 'PostalAddress',
+                'streetAddress'   => $street,
+                'addressLocality' => $city,
+                'addressRegion'   => $state,
+                'postalCode'      => $zip,
+            ),
+        );
+
+        if ( '' !== $phone ) {
+            $entity['telephone'] = $phone;
+        }
+
+        $locations[] = $entity;
+    }
+
+    $locations = apply_filters( 'rma_business_locations', $locations );
+
+    return $locations;
+}
+
+/**
+ * Matches a product's raw "On Display in Showroom" attribute value (which
+ * may name more than one location, comma-separated, for products on
+ * display in multiple stores) against the real locations configured above,
+ * and returns the matching entity/entities. A configured location's name
+ * only has to appear as a substring of the attribute term (or vice versa)
+ * so "Somerset" on the product matches a configured "Somerset" location
+ * without requiring an exact string match. No match, anywhere, means an
+ * empty array — never a guess at which store a product is actually in.
+ */
+function rma_get_locations_for_display_value( $on_display_raw ) {
+    $locations = rma_get_business_locations();
+
+    if ( empty( $locations ) ) {
+        return array();
+    }
+
+    $terms   = array_map( 'trim', explode( ',', $on_display_raw ) );
+    $matches = array();
+
+    foreach ( $terms as $term ) {
+        if ( '' === $term ) {
+            continue;
+        }
+
+        foreach ( $locations as $location ) {
+            if ( empty( $location['name'] ) ) {
+                continue;
+            }
+
+            if ( false !== stripos( $term, $location['name'] ) || false !== stripos( $location['name'], $term ) ) {
+                $matches[ $location['name'] ] = $location;
+            }
+        }
+    }
+
+    return array_values( $matches );
 }
 
 /**
