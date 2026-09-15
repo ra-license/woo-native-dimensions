@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.18
+ * Version: 1.19
  * Author: Your Dev Team
  */
 
@@ -31,6 +31,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 // computes the same match live, in wp-admin, independent of the fetched
 // page, to see directly whether the mismatch is in the matching logic or
 // somewhere in how the front-end actually renders.
+//
+// v1.19: the v1.18 debug section found the real cause — not a caching or
+// code bug at all. The Showroom Locations field's placeholder text used
+// Kemper's own real, correct address data as its example (since that's
+// what this plugin was built for), which meant an empty, never-actually-saved
+// field looked visually identical to a correctly-filled one. Fixes the trap
+// itself: the placeholder is now obviously fake, and an empty field shows an
+// explicit "nothing saved yet" warning instead of staying silent.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -108,12 +116,25 @@ function rma_github_update_token_html() {
 
 function rma_locations_settings_intro_html() {
     echo '<p>' . esc_html__( 'One real showroom location per line, so each product\'s "On Display in Showroom" value can be tied to the specific store that actually has it — this is what powers Offer.availableAtOrFrom in the product\'s structured data. Leave blank if this site has no physical showroom locations.', 'rma' ) . '</p>';
-    echo '<p class="description">' . esc_html__( 'Format: Name | Street Address | City | State | ZIP | Phone', 'rma' ) . '<br />' . esc_html__( 'Example: Somerset | 1755 US Hwy. 27 South | Somerset | KY | 42501 | (606) 677-0800', 'rma' ) . '</p>';
+    echo '<p class="description">' . esc_html__( 'Format: Name | Street Address | City | State | ZIP | Phone', 'rma' ) . '<br />' . esc_html__( 'Example: Example Store | 123 Main St | Anytown | ST | 00000 | (555) 555-5555', 'rma' ) . '</p>';
 }
 
 function rma_business_locations_html() {
     $locations = get_option( 'rma_business_locations', '' );
-    echo '<textarea name="rma_business_locations" rows="6" style="width: 500px;" placeholder="Somerset | 1755 US Hwy. 27 South | Somerset | KY | 42501 | (606) 677-0800&#10;London | 1334 South Laurel Road | London | KY | 40744 | (606) 864-4061">' . esc_textarea( $locations ) . '</textarea>';
+
+    // v1.19: deliberately a fake, obviously-not-real placeholder now — a
+    // real site's own real data was used here before, which meant an empty,
+    // never-saved field looked identical to a correctly-filled one (grayed
+    // placeholder text vs. saved black text is an easy difference to miss).
+    // That exact confusion cost real debugging time on kemperhomefurnishings.com
+    // (2026-09-15): a whole session tracing cache layers before finding the
+    // field itself had simply never been saved.
+    echo '<textarea name="rma_business_locations" rows="6" style="width: 500px;" placeholder="Example Store | 123 Main St | Anytown | ST | 00000 | (555) 555-5555">' . esc_textarea( $locations ) . '</textarea>';
+
+    if ( '' === trim( $locations ) ) {
+        echo '<p class="description" style="color:#a00;">' . esc_html__( 'Nothing saved yet — the text above is just a placeholder example, not real data. Type your real location(s) and click Save Settings below.', 'rma' ) . '</p>';
+    }
+
     echo '<p class="description">' . esc_html__( 'The "Name" must match (or be contained in) the value used in the "On Display in Showroom" product attribute, so this plugin knows which location an in-stock product actually belongs to.', 'rma' ) . '</p>';
 }
 
