@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.17
+ * Version: 1.18
  * Author: Your Dev Team
  */
 
@@ -21,6 +21,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 // WooCommerce > AEO Settings, matched against each product's existing
 // "On Display in Showroom" attribute value. Not hardcoded to any one
 // client's address, since this plugin is shared across sites.
+//
+// v1.18: adds a "Showroom-location matching (debug)" section to the AEO
+// Preview page — v1.17 worked correctly against a fresh copy of this exact
+// file, and the reinstalled zip on kemperhomefurnishings.com was confirmed
+// byte-identical, yet the live page still wasn't showing availableAtOrFrom
+// after every known caching layer (CDN, WP Rocket, a full plugin reinstall)
+// was cleared. Rather than keep guessing at the cause from outside, this
+// computes the same match live, in wp-admin, independent of the fetched
+// page, to see directly whether the mismatch is in the matching logic or
+// somewhere in how the front-end actually renders.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -1023,6 +1033,54 @@ function rma_render_aeo_preview_page() {
                                 <td><?php echo esc_html( is_scalar( $value ) ? $value : wp_json_encode( $value ) ); ?></td>
                             </tr>
                         <?php endforeach; ?>
+                    </tbody>
+                </table>
+
+                <?php
+                // v1.18 diagnostic: computed live, right here in wp-admin, via
+                // the exact same functions the front-end filter uses — NOT
+                // from the fetched page above. Added specifically to isolate
+                // whether a showroom-location mismatch (or a stale front-end
+                // render) is the cause when availableAtOrFrom doesn't show up
+                // in the fetched JSON-LD above, instead of guessing further.
+                $rma_on_display_slug  = apply_filters( 'rma_on_display_attribute_slug', 'on-display-in-showroom' );
+                $rma_on_display_value = $product->get_attribute( $rma_on_display_slug );
+                $rma_locations_raw    = get_option( 'rma_business_locations', '' );
+                $rma_locations        = rma_get_business_locations();
+                $rma_matched          = rma_get_locations_for_display_value( $rma_on_display_value );
+                ?>
+                <h3><?php esc_html_e( 'Showroom-location matching (debug)', 'rma' ); ?></h3>
+                <p><?php esc_html_e( 'Computed right now, directly in wp-admin, using the same functions the live front-end filter uses — independent of whatever the fetched page above shows.', 'rma' ); ?></p>
+                <table class="widefat striped" style="max-width:900px;">
+                    <tbody>
+                        <tr>
+                            <td style="width:260px;"><strong><?php esc_html_e( 'On Display attribute (raw)', 'rma' ); ?></strong></td>
+                            <td><?php echo '' !== $rma_on_display_value ? esc_html( $rma_on_display_value ) : esc_html__( '(empty)', 'rma' ); ?></td>
+                        </tr>
+                        <tr>
+                            <td><strong><?php esc_html_e( 'Saved "Showroom Locations" setting (raw)', 'rma' ); ?></strong></td>
+                            <td><pre style="white-space:pre-wrap;margin:0;"><?php echo '' !== trim( $rma_locations_raw ) ? esc_html( $rma_locations_raw ) : esc_html__( '(empty — nothing saved)', 'rma' ); ?></pre></td>
+                        </tr>
+                        <tr>
+                            <td><strong><?php esc_html_e( 'Parsed locations', 'rma' ); ?></strong></td>
+                            <td>
+                                <?php if ( empty( $rma_locations ) ) : ?>
+                                    <?php esc_html_e( '(none parsed)', 'rma' ); ?>
+                                <?php else : ?>
+                                    <?php echo esc_html( implode( ', ', wp_list_pluck( $rma_locations, 'name' ) ) ); ?>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td><strong><?php esc_html_e( 'Matched location(s) for this product', 'rma' ); ?></strong></td>
+                            <td>
+                                <?php if ( empty( $rma_matched ) ) : ?>
+                                    <strong style="color:#a00;"><?php esc_html_e( 'No match', 'rma' ); ?></strong>
+                                <?php else : ?>
+                                    <span style="color:#0a0;"><?php echo esc_html( implode( ', ', wp_list_pluck( $rma_matched, 'name' ) ) ); ?></span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
                     </tbody>
                 </table>
 
