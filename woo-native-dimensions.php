@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.20
+ * Version: 1.21
  * Author: Your Dev Team
  */
 
@@ -54,6 +54,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 // wp_footer fallback that builds a complete Product entity independently
 // when WooCommerce's own filter never ran — see rma_build_offer_node() and
 // rma_output_standalone_product_schema().
+//
+// v1.21: fixes a real, live-confirmed readability bug in v1.20's fallback
+// description field — alysonjon.com's imported catalog content is an
+// unspaced HTML table, and stripping tags with no separator ran every
+// cell together ("FeaturesLeatherYesProduct DetailsWeight54.00 lbs...").
+// rma_html_to_plain_text() inserts a space at block-level tag boundaries
+// first so the description reads as real text.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -618,6 +625,25 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
 }
 
 /**
+ * Converts an HTML product description into readable plain text for a
+ * schema.org `description` field. A bare wp_strip_all_tags() runs every
+ * cell of a table-formatted description together with no separator at all
+ * (confirmed real on alysonjon.com's imported catalog content, e.g. a
+ * "Features / Leather / Yes / Product Details / Weight / 54.00 lbs" table
+ * collapsing into "FeaturesLeatherYesProduct DetailsWeight54.00 lbs") —
+ * this inserts a space at each block-level tag boundary first, so the
+ * words a table only visually separated stay separated as real text too.
+ */
+function rma_html_to_plain_text( $html ) {
+    $html = preg_replace( '/<\/(td|th|tr|p|div|li|h[1-6])>/i', '$0 ', $html );
+    $html = preg_replace( '/<br\s*\/?>/i', ' ', $html );
+    $text = wp_strip_all_tags( $html );
+    $text = preg_replace( '/\s+/', ' ', $text );
+
+    return trim( $text );
+}
+
+/**
  * Standalone Product schema — only for sites where WooCommerce's own
  * native structured-data output never fires at all for a product page.
  *
@@ -678,7 +704,7 @@ function rma_output_standalone_product_schema() {
         $description = $product->get_short_description();
     }
     if ( ! empty( $description ) ) {
-        $markup['description'] = wp_strip_all_tags( $description );
+        $markup['description'] = rma_html_to_plain_text( $description );
     }
 
     $image_id = $product->get_image_id();
