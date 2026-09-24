@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
- * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.19
+ * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
+ * Version: 1.20
  * Author: Your Dev Team
  */
 
@@ -39,6 +39,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 // field looked visually identical to a correctly-filled one. Fixes the trap
 // itself: the placeholder is now obviously fake, and an empty field shows an
 // explicit "nothing saved yet" warning instead of staying silent.
+//
+// v1.20: adds a standalone Product-schema fallback for catalog-only sites.
+// Confirmed real on alysonjon.com (2026-09-24): a 45,000+ product catalog
+// with no price or stock managed (no ERP, no dedicated inventory staff)
+// produced ZERO Product structured data — WooCommerce's own native schema
+// never fired at all for these pages, so this plugin (which only ever
+// extended whatever WooCommerce already produced) had nothing to extend.
+// Real facts like dimensions, seller identity, and showroom location were
+// available the whole time and simply weren't reaching AI/search. This
+// version also relaxes the main filter's offer-building so seller and
+// showroom location go out even when WooCommerce built no offer at all
+// (price/stock fields are just omitted, never invented), and adds a
+// wp_footer fallback that builds a complete Product entity independently
+// when WooCommerce's own filter never ran — see rma_build_offer_node() and
+// rma_output_standalone_product_schema().
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -356,31 +371,20 @@ function rma_output_category_structured_data() {
  * disabled WooCommerce's native schema output entirely, this adds nothing,
  * and that's a separate, bigger gap that needs its own diagnosis per site.
  */
-add_filter( 'woocommerce_structured_data_product', 'add_native_woo_dimensions_to_structured_data', 10, 2 );
-
-function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
-
-    if ( ! $product instanceof WC_Product ) {
-        return $markup;
-    }
-
-    $unit = get_option( 'woocommerce_dimension_unit', 'in' );
-
-    // Reuse the exact same accessors as the visible shortcode table above,
-    // so the AI-facing data and the on-page table can never disagree.
-    $length   = $product->get_length();
-    $width    = $product->get_width();
-    $height   = $product->get_height();
-    $material = $product->get_attribute( 'material' );
-
-    // Attribute slug for showroom/on-display status. Confirmed real-world
-    // convention (as used on kemperhomefurnishings.com): a WooCommerce
-    // attribute taxonomy named "On Display in Showroom" (pa_on-display-in-showroom).
-    // Filterable per-site in case another site uses a different slug.
-    $on_display_slug = apply_filters( 'rma_on_display_attribute_slug', 'on-display-in-showroom' );
-    $on_display      = $product->get_attribute( $on_display_slug );
-
+/**
+ * Shared builders used by both the normal WooCommerce-extension path below
+ * and the standalone fallback path (rma_output_standalone_product_schema)
+ * for sites where WooCommerce's own native schema never fires at all.
+ * Keeping these in one place means both paths produce identical shapes —
+ * "the same info pushed out as though it did have stock and price" is only
+ * true if there is exactly one place that decides what that info is.
+ */
+function rma_build_dimension_properties( $product, $unit, $on_display ) {
     $properties = array();
+
+    $width  = $product->get_width();
+    $length = $product->get_length();
+    $height = $product->get_height();
 
     if ( ! empty( $width ) ) {
         $properties[] = array(
@@ -414,6 +418,94 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
         );
     }
 
+    return $properties;
+}
+
+/**
+ * Builds a complete Offer node from scratch: real availability (derived
+ * the same way WooCommerce core itself does — backorder, then in-stock,
+ * then out-of-stock), seller identity, and showroom location always
+ * included where determinable. price / priceCurrency / inventoryLevel are
+ * included ONLY when the product actually has them — never fabricated for
+ * a catalog-only site that doesn't manage price or stock. This is what
+ * lets a client with no ERP and no dedicated inventory staff still publish
+ * everything else (seller, showroom, dimensions live alongside this via
+ * additionalProperty) instead of getting nothing at all.
+ */
+function rma_build_offer_node( $product, $on_display ) {
+    $offer = array(
+        '@type' => 'Offer',
+        'url'   => get_permalink( $product->get_id() ),
+    );
+
+    if ( $product->is_on_backorder() ) {
+        $availability = 'BackOrder';
+    } elseif ( $product->is_in_stock() ) {
+        $availability = 'InStock';
+    } else {
+        $availability = 'OutOfStock';
+    }
+    $offer['availability'] = 'https://schema.org/' . $availability;
+
+    $price = $product->get_price();
+    if ( '' !== $price && null !== $price ) {
+        $offer['price']         = $price;
+        $offer['priceCurrency'] = get_woocommerce_currency();
+    }
+
+    if ( $product->managing_stock() ) {
+        $stock_quantity = $product->get_stock_quantity();
+        if ( null !== $stock_quantity ) {
+            $offer['inventoryLevel'] = array(
+                '@type' => 'QuantitativeValue',
+                'value' => (int) $stock_quantity,
+            );
+        }
+    }
+
+    $seller = rma_get_business_seller_entity();
+    if ( ! empty( $seller ) ) {
+        $offer['seller'] = $seller;
+    }
+
+    if ( ! empty( $on_display ) ) {
+        $available_at = rma_get_locations_for_display_value( $on_display );
+        if ( ! empty( $available_at ) ) {
+            $offer['availableAtOrFrom'] = ( 1 === count( $available_at ) ) ? $available_at[0] : $available_at;
+        }
+    }
+
+    return $offer;
+}
+
+add_filter( 'woocommerce_structured_data_product', 'add_native_woo_dimensions_to_structured_data', 10, 2 );
+
+function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
+
+    if ( ! $product instanceof WC_Product ) {
+        return $markup;
+    }
+
+    // Proves WooCommerce's own generator actually ran and applied this
+    // filter for this page load. rma_output_standalone_product_schema()
+    // checks this so it only ever runs on sites where WooCommerce's native
+    // schema doesn't fire at all — never alongside a working native output,
+    // which would mean two competing Product entities on the same page.
+    $GLOBALS['rma_native_product_filter_fired'] = true;
+
+    $unit = get_option( 'woocommerce_dimension_unit', 'in' );
+
+    $material = $product->get_attribute( 'material' );
+
+    // Attribute slug for showroom/on-display status. Confirmed real-world
+    // convention (as used on kemperhomefurnishings.com): a WooCommerce
+    // attribute taxonomy named "On Display in Showroom" (pa_on-display-in-showroom).
+    // Filterable per-site in case another site uses a different slug.
+    $on_display_slug = apply_filters( 'rma_on_display_attribute_slug', 'on-display-in-showroom' );
+    $on_display      = $product->get_attribute( $on_display_slug );
+
+    $properties = rma_build_dimension_properties( $product, $unit, $on_display );
+
     if ( ! empty( $properties ) ) {
         if ( ! empty( $markup['additionalProperty'] ) && is_array( $markup['additionalProperty'] ) ) {
             $markup['additionalProperty'] = array_merge( $markup['additionalProperty'], $properties );
@@ -426,16 +518,29 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
         $markup['material'] = $material;
     }
 
+    // Some clients run a catalog-only site with no price or stock
+    // management at all (no ERP integration, no dedicated workforce to
+    // keep it current) — for those, WooCommerce core produces no `offers`
+    // at all. That used to mean this plugin added nothing either, even
+    // though seller identity, showroom location, and dimensions were all
+    // real, available facts the whole time. If WooCommerce built an offer,
+    // keep enriching it in place (unchanged behavior); if it didn't, build
+    // one from scratch — real fields only, price/stock simply omitted
+    // rather than invented.
+    if ( empty( $markup['offers'] ) ) {
+        $markup['offers'] = rma_build_offer_node( $product, $on_display );
+
+        return $markup;
+    }
+
     // Stock quantity: WooCommerce core's own JSON-LD already emits
     // offers.price / offers.priceCurrency / offers.availability correctly,
     // so price is deliberately left untouched here to avoid two sources of
     // truth disagreeing. What core does NOT emit is the actual numeric
     // count, only the InStock/OutOfStock enum — so we add that as
     // Offer.inventoryLevel (a real schema.org QuantitativeValue), merged
-    // into whatever offer(s) core already produced. If core didn't produce
-    // an offer at all for this product, we leave it alone rather than
-    // guessing at a replacement.
-    if ( $product->managing_stock() && ! empty( $markup['offers'] ) ) {
+    // into whatever offer(s) core already produced.
+    if ( $product->managing_stock() ) {
         $stock_quantity = $product->get_stock_quantity();
 
         if ( null !== $stock_quantity ) {
@@ -463,19 +568,17 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
     // an AI engine can't distinguish from any other site listing the same
     // manufacturer item. Portable across sites on purpose — see the
     // capture functions below for how the business entity is sourced.
-    if ( ! empty( $markup['offers'] ) ) {
-        $seller = rma_get_business_seller_entity();
+    $seller = rma_get_business_seller_entity();
 
-        if ( ! empty( $seller ) ) {
-            if ( isset( $markup['offers']['@type'] ) ) {
-                if ( empty( $markup['offers']['seller'] ) ) {
-                    $markup['offers']['seller'] = $seller;
-                }
-            } else {
-                foreach ( $markup['offers'] as $index => $offer ) {
-                    if ( is_array( $offer ) && empty( $offer['seller'] ) ) {
-                        $markup['offers'][ $index ]['seller'] = $seller;
-                    }
+    if ( ! empty( $seller ) ) {
+        if ( isset( $markup['offers']['@type'] ) ) {
+            if ( empty( $markup['offers']['seller'] ) ) {
+                $markup['offers']['seller'] = $seller;
+            }
+        } else {
+            foreach ( $markup['offers'] as $index => $offer ) {
+                if ( is_array( $offer ) && empty( $offer['seller'] ) ) {
+                    $markup['offers'][ $index ]['seller'] = $seller;
                 }
             }
         }
@@ -488,7 +591,7 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
     // ever used (see rma_get_business_locations()) — a product whose
     // on-display value doesn't match any configured location gets nothing
     // added here, never a guessed or invented location.
-    if ( ! empty( $markup['offers'] ) && ! empty( $on_display ) ) {
+    if ( ! empty( $on_display ) ) {
         $available_at = rma_get_locations_for_display_value( $on_display );
 
         if ( ! empty( $available_at ) ) {
@@ -512,6 +615,111 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
     }
 
     return $markup;
+}
+
+/**
+ * Standalone Product schema — only for sites where WooCommerce's own
+ * native structured-data output never fires at all for a product page.
+ *
+ * Confirmed real (alysonjon.com, 2026-09-24): a large catalog-only site
+ * (45,000+ products, no price or stock managed — no ERP, no dedicated
+ * inventory staff) produced ZERO Product structured data on every product
+ * page checked, not even the base name/url/image WooCommerce normally
+ * emits unconditionally — meaning woocommerce_structured_data_product
+ * never fired at all for these pages (something upstream in that site's
+ * rendering pipeline, not a price/stock gate in WooCommerce's own
+ * generator — that generator doesn't check price/stock before running).
+ * Since this plugin previously only EXTENDED whatever WooCommerce already
+ * produced, it had nothing to extend and published nothing either — even
+ * though dimensions, material, seller, and showroom location were all
+ * real, available facts the whole time.
+ *
+ * Hooked to wp_footer (priority 20, after WooCommerce's own native output,
+ * which prints at its default priority) rather than wp_head, specifically
+ * so the flag check below runs only after woocommerce_single_product_summary
+ * would already have fired during this same page load if it was ever going
+ * to. That flag — set inside add_native_woo_dimensions_to_structured_data()
+ * — is the real, first-party signal for "did WooCommerce's own generator
+ * actually run," not a guess, and it's what guarantees these two code paths
+ * never both emit a Product entity for the same page.
+ */
+add_action( 'wp_footer', 'rma_output_standalone_product_schema', 20 );
+
+function rma_output_standalone_product_schema() {
+    if ( ! function_exists( 'is_product' ) || ! is_product() ) {
+        return;
+    }
+
+    if ( ! empty( $GLOBALS['rma_native_product_filter_fired'] ) ) {
+        return;
+    }
+
+    $product = wc_get_product( get_the_ID() );
+    if ( ! $product instanceof WC_Product ) {
+        return;
+    }
+
+    $unit            = get_option( 'woocommerce_dimension_unit', 'in' );
+    $on_display_slug = apply_filters( 'rma_on_display_attribute_slug', 'on-display-in-showroom' );
+    $on_display      = $product->get_attribute( $on_display_slug );
+    $material        = $product->get_attribute( 'material' );
+    $permalink       = get_permalink( $product->get_id() );
+
+    $markup = array(
+        '@context' => 'https://schema.org/',
+        '@type'    => 'Product',
+        '@id'      => $permalink . '#product',
+        'name'     => $product->get_name(),
+        'url'      => $permalink,
+    );
+
+    $description = $product->get_description();
+    if ( empty( $description ) ) {
+        $description = $product->get_short_description();
+    }
+    if ( ! empty( $description ) ) {
+        $markup['description'] = wp_strip_all_tags( $description );
+    }
+
+    $image_id = $product->get_image_id();
+    if ( $image_id ) {
+        $image_url = wp_get_attachment_image_url( $image_id, 'full' );
+        if ( $image_url ) {
+            $markup['image'] = $image_url;
+        }
+    }
+
+    $sku = $product->get_sku();
+    if ( ! empty( $sku ) ) {
+        $markup['sku'] = $sku;
+    }
+
+    // Brand attribute slug is filterable — sites vary between a plain
+    // "Brand" product attribute (assumed here as the real-world default)
+    // and a dedicated brand taxonomy from a separate brands plugin.
+    $brand_slug = apply_filters( 'rma_brand_attribute_slug', 'brand' );
+    $brand      = $product->get_attribute( $brand_slug );
+    if ( ! empty( $brand ) ) {
+        $markup['brand'] = array(
+            '@type' => 'Brand',
+            'name'  => $brand,
+        );
+    }
+
+    $properties = rma_build_dimension_properties( $product, $unit, $on_display );
+    if ( ! empty( $properties ) ) {
+        $markup['additionalProperty'] = $properties;
+    }
+
+    if ( ! empty( $material ) ) {
+        $markup['material'] = $material;
+    }
+
+    $markup['offers'] = rma_build_offer_node( $product, $on_display );
+
+    $markup = apply_filters( 'rma_standalone_product_structured_data', $markup, $product );
+
+    echo '<script type="application/ld+json">' . wp_json_encode( $markup, JSON_UNESCAPED_SLASHES ) . '</script>' . "\n";
 }
 
 /**
