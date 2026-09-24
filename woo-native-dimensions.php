@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.21
+ * Version: 1.22
  * Author: Your Dev Team
  */
 
@@ -61,6 +61,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 // cell together ("FeaturesLeatherYesProduct DetailsWeight54.00 lbs...").
 // rma_html_to_plain_text() inserts a space at block-level tag boundaries
 // first so the description reads as real text.
+//
+// v1.22: the backorder fallback in rma_build_offer_node() now emits
+// "LimitedAvailability" instead of schema.org's own "BackOrder" value by
+// default (filterable via rma_backorder_availability_value). BackOrder is
+// technically correct per schema.org's own spec ("available on backorder"),
+// but the word itself can read as "unavailable" to an AI answer engine
+// parsing it conversationally — defeating the point of publishing it. Only
+// applies within rma_build_offer_node(), i.e. only when there's no other,
+// more authoritative availability signal already present (WooCommerce's
+// own native output, where it fires, is untouched by this).
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -446,7 +456,16 @@ function rma_build_offer_node( $product, $on_display ) {
     );
 
     if ( $product->is_on_backorder() ) {
-        $availability = 'BackOrder';
+        // "BackOrder" is schema.org's technically-correct value here (its
+        // own spec defines it as "available on backorder"), but AI answer
+        // engines can read the word itself as a signal the item ISN'T
+        // available, which defeats the purpose of publishing this data at
+        // all. Filterable per site — this fallback default only applies via
+        // rma_build_offer_node(), i.e. only when there's no other, more
+        // authoritative availability signal already present to defer to
+        // (WooCommerce's own native output, where it fires, is never
+        // touched by this — see add_native_woo_dimensions_to_structured_data()).
+        $availability = apply_filters( 'rma_backorder_availability_value', 'LimitedAvailability', $product );
     } elseif ( $product->is_in_stock() ) {
         $availability = 'InStock';
     } else {
