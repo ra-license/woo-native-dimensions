@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.22
+ * Version: 1.23
  * Author: Your Dev Team
  */
 
@@ -71,6 +71,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 // applies within rma_build_offer_node(), i.e. only when there's no other,
 // more authoritative availability signal already present (WooCommerce's
 // own native output, where it fires, is untouched by this).
+//
+// v1.23: fixes a real gap found while correcting alysonjon.com's store
+// address — rma_get_business_seller_entity()'s WooCommerce-fallback
+// address never included addressRegion (state) at all, even with a real
+// state configured in wp-admin, because WooCommerce doesn't store it as
+// its own option — it's embedded in woocommerce_default_country as
+// "US:TX". Now parsed out and included, matching the field set every
+// other address builder in this plugin already uses.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -843,19 +851,34 @@ function rma_get_business_seller_entity() {
         return $seller;
     }
 
+    // WooCommerce doesn't store the store's state/region as its own option
+    // — it's embedded in woocommerce_default_country as "US:TX". Confirmed
+    // missing live on alysonjon.com (2026-09-24): the address rendered with
+    // no addressRegion at all even though a real state was configured in
+    // wp-admin, because this fallback never parsed it out.
+    $default_country = get_option( 'woocommerce_default_country', '' );
+    $country_parts    = explode( ':', $default_country );
+    $region           = isset( $country_parts[1] ) ? $country_parts[1] : '';
+
+    $address = array(
+        '@type'           => 'PostalAddress',
+        'streetAddress'   => implode( ' ', array_filter( array(
+            get_option( 'woocommerce_store_address' ),
+            get_option( 'woocommerce_store_address_2' ),
+        ) ) ),
+        'addressLocality' => get_option( 'woocommerce_store_city' ),
+        'postalCode'      => get_option( 'woocommerce_store_postcode' ),
+    );
+
+    if ( ! empty( $region ) ) {
+        $address['addressRegion'] = $region;
+    }
+
     $seller = array(
         '@type'   => 'Organization',
         'name'    => get_bloginfo( 'name' ),
         'url'     => home_url( '/' ),
-        'address' => array(
-            '@type'           => 'PostalAddress',
-            'streetAddress'   => implode( ' ', array_filter( array(
-                get_option( 'woocommerce_store_address' ),
-                get_option( 'woocommerce_store_address_2' ),
-            ) ) ),
-            'addressLocality' => get_option( 'woocommerce_store_city' ),
-            'postalCode'      => get_option( 'woocommerce_store_postcode' ),
-        ),
+        'address' => $address,
     );
 
     $seller = apply_filters( 'rma_business_seller_entity', $seller, $captured );
