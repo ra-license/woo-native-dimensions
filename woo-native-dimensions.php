@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.23
+ * Version: 1.24
  * Author: Your Dev Team
  */
 
@@ -79,6 +79,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 // its own option — it's embedded in woocommerce_default_country as
 // "US:TX". Now parsed out and included, matching the field set every
 // other address builder in this plugin already uses.
+//
+// v1.24: adds an Update Channel setting (Production / Staging), matching
+// Room Planner and Promo Manager. Until now this plugin had only one repo,
+// so every change reached live sites (Kemper included) the moment it was
+// pushed, with no staging gate. The staging site now checks the separate
+// woo-native-dimensions-staging repo; every other site stays on production.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -95,10 +101,26 @@ if ( ! defined( 'ABSPATH' ) ) {
 //   define( 'RMA_GITHUB_UPDATE_TOKEN', 'github_pat_xxxxxxxxxxxxxxxxxxxx' );
 // ...or, for sites without easy wp-config.php access, via WooCommerce >
 // AEO Settings in wp-admin.
+//
+// Staging and production check TWO SEPARATE private repos (same reasoning as
+// Room Planner: the update library prefers tags over branches, so branch-only
+// separation can't keep a tagged release away from live sites). Defaults to
+// production, the safe choice, if nothing is set:
+//   define( 'RMA_UPDATE_CHANNEL', 'staging' ); // only ever on the staging site
+// The site's token must cover whichever repo its channel points at.
 require_once __DIR__ . '/lib/plugin-update-checker/plugin-update-checker.php';
 
+function rma_update_channel() {
+    $channel = defined( 'RMA_UPDATE_CHANNEL' ) && RMA_UPDATE_CHANNEL
+        ? RMA_UPDATE_CHANNEL
+        : get_option( 'rma_update_channel', 'production' );
+    return 'staging' === $channel ? 'staging' : 'production';
+}
+
 $rmaUpdateChecker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-    'https://github.com/ra-license/woo-native-dimensions/',
+    'staging' === rma_update_channel()
+        ? 'https://github.com/ra-license/woo-native-dimensions-staging/'
+        : 'https://github.com/ra-license/woo-native-dimensions/',
     __FILE__,
     'woo-native-dimensions'
 );
@@ -131,7 +153,9 @@ function rma_register_settings_page() {
 add_action( 'admin_init', 'rma_register_settings' );
 function rma_register_settings() {
     register_setting( 'rma_settings_group', 'rma_github_update_token', 'sanitize_text_field' );
+    register_setting( 'rma_settings_group', 'rma_update_channel', 'rma_sanitize_update_channel' );
     add_settings_section( 'rma_update_settings', __( 'Auto-Update Settings', 'rma' ), 'rma_update_settings_intro_html', 'rma-settings' );
+    add_settings_field( 'rma_update_channel_field', __( 'Update Channel', 'rma' ), 'rma_update_channel_html', 'rma-settings', 'rma_update_settings' );
     add_settings_field( 'rma_github_update_token_field', __( 'GitHub Update Token', 'rma' ), 'rma_github_update_token_html', 'rma-settings', 'rma_update_settings' );
 
     register_setting( 'rma_settings_group', 'rma_business_locations', 'sanitize_textarea_field' );
@@ -140,7 +164,25 @@ function rma_register_settings() {
 }
 
 function rma_update_settings_intro_html() {
-    echo '<p>' . esc_html__( 'Lets this site automatically detect new versions of this plugin instead of needing a manual zip upload. Requires a one-time, read-only GitHub token, scoped to only this plugin\'s repository — see R&A Marketing for the token if you don\'t have it.', 'rma' ) . '</p>';
+    echo '<p>' . esc_html__( 'Lets this site automatically detect new versions of this plugin instead of needing a manual zip upload. Requires a one-time, read-only GitHub token covering this plugin\'s repositories — see R&A Marketing for the token if you don\'t have it.', 'rma' ) . '</p>';
+}
+
+function rma_sanitize_update_channel( $value ) {
+    return 'staging' === $value ? 'staging' : 'production';
+}
+
+function rma_update_channel_html() {
+    $channel       = rma_update_channel();
+    $has_wp_config = defined( 'RMA_UPDATE_CHANNEL' ) && RMA_UPDATE_CHANNEL;
+    echo '<select name="rma_update_channel"' . ( $has_wp_config ? ' disabled' : '' ) . '>';
+    echo '<option value="production"' . selected( $channel, 'production', false ) . '>' . esc_html__( 'Production (default — only receives verified updates)', 'rma' ) . '</option>';
+    echo '<option value="staging"' . selected( $channel, 'staging', false ) . '>' . esc_html__( 'Staging (receives new updates first, for testing)', 'rma' ) . '</option>';
+    echo '</select>';
+    if ( $has_wp_config ) {
+        echo '<p class="description">' . esc_html__( 'Set via a wp-config.php constant, which takes priority — this dropdown is disabled here.', 'rma' ) . '</p>';
+    } else {
+        echo '<p class="description"><strong>' . esc_html__( 'Leave this on "Production" for every real/live site.', 'rma' ) . '</strong> ' . esc_html__( 'Only set this to "Staging" on your dedicated test site (gbh0yydkkp.wpdns.site) — that\'s what lets you verify an update there before it ever reaches a live site.', 'rma' ) . '</p>';
+    }
 }
 
 function rma_github_update_token_html() {
