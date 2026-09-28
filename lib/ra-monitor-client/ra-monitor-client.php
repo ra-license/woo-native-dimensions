@@ -1,6 +1,6 @@
 <?php
 /**
- * RA Monitor Client 1.0.0
+ * RA Monitor Client 1.1.0
  *
  * Shared by every R&A plugin, bundled into each one the same way
  * plugin-update-checker is. Once a day it sends one short check-in to
@@ -10,7 +10,9 @@
  *
  * What it sends: the site's address and name, WordPress/WooCommerce/PHP
  * versions, and the details above. Never tokens, customer data, orders or
- * any content. Turn it off on a site with:
+ * any content. Each reporting plugin's row on the Plugins screen shows when
+ * the last check-in went out and has a "Check in now" link. Turn it off on
+ * a site with:
  *   define( 'RA_MONITOR_DISABLE', true );
  *
  * Usage, right after a plugin builds its update checker:
@@ -34,7 +36,7 @@ if ( ! class_exists( 'RA_Monitor_Client' ) ) {
 
 	class RA_Monitor_Client {
 
-		const VERSION  = '1.0.0';
+		const VERSION  = '1.1.0';
 		const ENDPOINT = 'https://help.ramarketing.com/wp-json/ra-monitor/v1/checkin';
 
 		// Must match RA_MONITOR_KEY in the RA Plugin Monitor receiver.
@@ -93,6 +95,78 @@ if ( ! class_exists( 'RA_Monitor_Client' ) ) {
 			add_action( 'upgrader_process_complete', array( __CLASS__, 'schedule_soon' ) );
 			add_action( 'activated_plugin', array( __CLASS__, 'schedule_soon' ) );
 			add_action( 'deactivated_plugin', array( __CLASS__, 'on_deactivated' ) );
+
+			add_filter( 'plugin_row_meta', array( __CLASS__, 'plugin_row_meta' ), 10, 2 );
+			add_action( 'admin_post_ra_monitor_checkin_now', array( __CLASS__, 'checkin_now' ) );
+			add_action( 'admin_notices', array( __CLASS__, 'checkin_notice' ) );
+		}
+
+		/**
+		 * Under each reporting plugin on the Plugins screen: when the last
+		 * check-in went out, and a link to send one right now.
+		 */
+		public static function plugin_row_meta( $meta, $basename ) {
+			if ( ! current_user_can( 'manage_options' ) ) {
+				return $meta;
+			}
+			foreach ( self::$plugins as $args ) {
+				if ( plugin_basename( $args['file'] ) === $basename ) {
+					$url    = wp_nonce_url( admin_url( 'admin-post.php?action=ra_monitor_checkin_now' ), 'ra_monitor_checkin_now' );
+					$meta[] = esc_html( self::describe_last_checkin() ) . ' <a href="' . esc_url( $url ) . '">Check in now</a>';
+					break;
+				}
+			}
+			return $meta;
+		}
+
+		public static function checkin_now() {
+			if ( ! current_user_can( 'manage_options' ) ) {
+				wp_die( 'You do not have permission to do this.' );
+			}
+			check_admin_referer( 'ra_monitor_checkin_now' );
+			self::send( 10 );
+			wp_safe_redirect( add_query_arg( 'ra_monitor_checked', 1, admin_url( 'plugins.php' ) ) );
+			exit;
+		}
+
+		public static function checkin_notice() {
+			if ( empty( $_GET['ra_monitor_checked'] ) || ! current_user_can( 'manage_options' ) ) {
+				return;
+			}
+			$last = get_option( self::SENT_OPTION );
+			$ok   = is_array( $last ) && 200 === (int) $last['code'];
+			printf(
+				'<div class="notice notice-%s is-dismissible"><p><strong>R&amp;A Plugin Monitor:</strong> %s</p></div>',
+				$ok ? 'success' : 'error',
+				esc_html( $ok ? 'Check-in delivered. This site’s R&A plugins are now up to date on the monitor.' : self::describe_last_checkin() )
+			);
+		}
+
+		/**
+		 * Plain-language summary of the last check-in, including why it
+		 * failed, so a site that stops showing up can be diagnosed from the
+		 * site itself.
+		 */
+		private static function describe_last_checkin() {
+			$last = get_option( self::SENT_OPTION );
+			if ( ! is_array( $last ) || empty( $last['time'] ) ) {
+				return 'Hasn’t checked in with R&A’s Plugin Monitor yet.';
+			}
+			$ago  = human_time_diff( (int) $last['time'], time() ) . ' ago';
+			$code = (int) $last['code'];
+			if ( 200 === $code ) {
+				return 'Last check-in with R&A’s Plugin Monitor: delivered ' . $ago . '.';
+			}
+			if ( 0 === $code ) {
+				$why = 'couldn’t reach help.ramarketing.com' . ( ! empty( $last['error'] ) ? ' (' . $last['error'] . ')' : '' );
+			} elseif ( 401 === $code ) {
+				$why = 'the monitor rejected it, because this plugin’s check-in key doesn’t match the monitor’s';
+			} elseif ( 404 === $code ) {
+				$why = 'the RA Plugin Monitor plugin isn’t installed or turned on at help.ramarketing.com';
+			} else {
+				$why = 'the monitor answered with error ' . $code;
+			}
+			return 'Last check-in with R&A’s Plugin Monitor failed ' . $ago . ': ' . $why . '.';
 		}
 
 		public static function schedule_daily() {
