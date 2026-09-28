@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.24
+ * Version: 1.25
  * Author: Your Dev Team
  */
 
@@ -85,6 +85,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 // so every change reached live sites (Kemper included) the moment it was
 // pushed, with no staging gate. The staging site now checks the separate
 // woo-native-dimensions-staging repo; every other site stays on production.
+//
+// v1.25: adds the daily check-in to R&A's Plugin Monitor (help.ramarketing.com),
+// via the shared lib/ra-monitor-client — the same file bundled into every R&A
+// plugin. Reports this site's R&A plugins, their versions, and whether their
+// last update check actually reached GitHub. No tokens or customer data.
+// Turn off per site with define( 'RA_MONITOR_DISABLE', true );
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -131,6 +137,15 @@ $rmaGithubToken = defined( 'RMA_GITHUB_UPDATE_TOKEN' ) && RMA_GITHUB_UPDATE_TOKE
 if ( $rmaGithubToken ) {
     $rmaUpdateChecker->setAuthentication( $rmaGithubToken );
 }
+
+require_once __DIR__ . '/lib/ra-monitor-client/ra-monitor-client.php';
+RA_Monitor_Client::register( array(
+    'file'      => __FILE__,
+    'slug'      => 'woo-native-dimensions',
+    'checker'   => $rmaUpdateChecker,
+    'has_token' => (bool) $rmaGithubToken,
+    'channel'   => rma_update_channel(),
+) );
 
 // ========================================================================
 // 0b. AEO SETTINGS PAGE (GitHub update token, for sites without wp-config access)
