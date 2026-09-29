@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.30
+ * Version: 1.31
  * Author: Your Dev Team
  */
 
@@ -119,6 +119,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 // frazierandsonfurniture.com (2026-09-29). WordPress saves the site name
 // HTML-encoded, and get_bloginfo( 'name' ) returns it that way; JSON-LD
 // isn't HTML, so the entity went out literally. Now decoded first.
+//
+// v1.31: comments only, no behavior change. Corrects the v1.20 standalone
+// fallback's explanation of WHY catalog-only products had no Product
+// schema (it's WooCommerce's deliberate "no price, no reviews, no schema"
+// gate, not something upstream), and records the decision to keep
+// publishing price-less Offers despite Google flagging them — see the
+// docblock above rma_output_standalone_product_schema().
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -788,15 +795,35 @@ function rma_html_to_plain_text( $html ) {
  * Confirmed real (alysonjon.com, 2026-09-24): a large catalog-only site
  * (45,000+ products, no price or stock managed — no ERP, no dedicated
  * inventory staff) produced ZERO Product structured data on every product
- * page checked, not even the base name/url/image WooCommerce normally
- * emits unconditionally — meaning woocommerce_structured_data_product
- * never fired at all for these pages (something upstream in that site's
- * rendering pipeline, not a price/stock gate in WooCommerce's own
- * generator — that generator doesn't check price/stock before running).
+ * page checked, not even the base name/url/image — meaning
+ * woocommerce_structured_data_product never fired at all for these pages.
  * Since this plugin previously only EXTENDED whatever WooCommerce already
  * produced, it had nothing to extend and published nothing either — even
  * though dimensions, material, seller, and showroom location were all
  * real, available facts the whole time.
+ *
+ * v1.31 correction: the cause is WooCommerce's own deliberate gate, not
+ * "something upstream" as this comment used to say. WC_Structured_Data::
+ * generate_product_data() only builds an Offer when the product has a
+ * price, then returns before applying its filter if there's no Offer,
+ * aggregateRating, or review ("Check we have required data") — because
+ * Google treats a Product without one of those as invalid. So on any
+ * product with no price and no reviews, WooCommerce outputs nothing and
+ * this fallback is what runs.
+ *
+ * That means this fallback knowingly publishes what WooCommerce chose not
+ * to: Google's Rich Results Test flags these products as invalid for
+ * Product snippets and Merchant listings ("Either 'price' or
+ * 'priceSpecification.price' should be specified"). Kept on purpose
+ * (decided 2026-09-29, verified on frazierandsonfurniture.com and
+ * indianriverfurniture.com): the only consequence Google states is
+ * ineligibility for rich results, which a price-less product can't get
+ * anyway, while Bing has said publicly that schema markup helps Copilot
+ * understand content. Omitting the Offer instead would NOT clear the
+ * errors (Google also flags a Product with no Offer/review/rating) and
+ * would drop the seller, availability, and showroom facts. The only clean
+ * alternatives are publishing no Product at all (WooCommerce's default)
+ * or publishing real prices.
  *
  * Hooked to wp_footer (priority 20, after WooCommerce's own native output,
  * which prints at its default priority) rather than wp_head, specifically
