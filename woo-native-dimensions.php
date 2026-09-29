@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.28
+ * Version: 1.29
  * Author: Your Dev Team
  */
 
@@ -107,6 +107,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 // it appears on your website" implied punctuation mattered (it doesn't —
 // Google treats 321.636.4348 and 321-636-4348 as the same number); what
 // matters is using the main store line, not a cell or call-tracking number.
+//
+// v1.29: fixes seller address/phone never appearing on products with a
+// price. WooCommerce's own schema already puts a bare seller (name + url)
+// on those offers, and this plugin only ever filled in a MISSING seller, so
+// it never touched them — only catalog-only products (no WooCommerce offer)
+// got the full seller. Now WooCommerce's bare seller gets the full one
+// merged on top; see rma_merge_seller().
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -705,13 +712,13 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
 
     if ( ! empty( $seller ) ) {
         if ( isset( $markup['offers']['@type'] ) ) {
-            if ( empty( $markup['offers']['seller'] ) ) {
-                $markup['offers']['seller'] = $seller;
-            }
+            $existing                   = isset( $markup['offers']['seller'] ) ? $markup['offers']['seller'] : null;
+            $markup['offers']['seller'] = rma_merge_seller( $existing, $seller );
         } else {
             foreach ( $markup['offers'] as $index => $offer ) {
-                if ( is_array( $offer ) && empty( $offer['seller'] ) ) {
-                    $markup['offers'][ $index ]['seller'] = $seller;
+                if ( is_array( $offer ) ) {
+                    $existing                             = isset( $offer['seller'] ) ? $offer['seller'] : null;
+                    $markup['offers'][ $index ]['seller'] = rma_merge_seller( $existing, $seller );
                 }
             }
         }
@@ -906,6 +913,31 @@ function rma_capture_seo_business_entity( $data ) {
 add_filter( 'wpseo_schema_organization', 'rma_capture_seo_business_entity', 20, 1 );
 add_filter( 'rank_math/snippet/rich_snippet_local_business_entity', 'rma_capture_seo_business_entity', 20, 1 );
 add_filter( 'seopress_pro_get_json_data_local_business', 'rma_capture_seo_business_entity', 20, 1 );
+
+/**
+ * Decides what goes in an Offer's seller when one may already be there.
+ *
+ * v1.29: WooCommerce core puts its own bare seller (just @type, name, url)
+ * on every offer it builds, so the old "only fill in a missing seller" rule
+ * meant the address and phone never reached any product with a price.
+ * Confirmed live on kemperhomefurnishings.com (2026-09-29). Now:
+ *   - no seller yet            -> ours
+ *   - WooCommerce's bare one   -> ours merged on top (lossless: the same
+ *                                 name and url, plus address/phone/@id)
+ *   - anything richer          -> left alone (an SEO plugin's or another
+ *                                 plugin's seller was put there on purpose)
+ */
+function rma_merge_seller( $existing, $seller ) {
+    if ( empty( $existing ) ) {
+        return $seller;
+    }
+
+    $is_bare = is_array( $existing )
+        && ! array_diff( array_keys( $existing ), array( '@type', 'name', 'url' ) )
+        && ( empty( $existing['@type'] ) || 'Organization' === $existing['@type'] );
+
+    return $is_bare ? array_merge( $existing, $seller ) : $existing;
+}
 
 function rma_get_business_seller_entity() {
     static $seller = null;
