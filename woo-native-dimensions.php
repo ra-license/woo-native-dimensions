@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.27
+ * Version: 1.28
  * Author: Your Dev Team
  */
 
@@ -102,6 +102,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 // never include one. Found on indianriverfurniture.com (2026-09-29): SEOPress
 // prints the store's full info (phone included) on the homepage only, so
 // every product page fell back to WooCommerce's address with no phone.
+//
+// v1.28: rewords the Phone Number field's help text. "Type it the same way
+// it appears on your website" implied punctuation mattered (it doesn't —
+// Google treats 321.636.4348 and 321-636-4348 as the same number); what
+// matters is using the main store line, not a cell or call-tracking number.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -245,7 +250,7 @@ function rma_business_phone_html() {
         echo '<p class="description" style="color:#a00;">' . esc_html__( 'Nothing saved yet — the gray text above is just an example. Type your real phone number and click Save Settings below.', 'rma' ) . '</p>';
     }
 
-    echo '<p class="description">' . esc_html__( 'Type it the same way it appears on your website. If your SEO plugin already adds your store info to product pages, its phone number is used instead.', 'rma' ) . '</p>';
+    echo '<p class="description">' . esc_html__( 'Use your main store phone number, the same one on your website and Google listing. If your SEO plugin already adds your store info to product pages, its phone number is used instead.', 'rma' ) . '</p>';
 }
 
 function rma_locations_settings_intro_html() {
