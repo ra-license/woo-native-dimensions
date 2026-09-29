@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.26
+ * Version: 1.27
  * Author: Your Dev Team
  */
 
@@ -95,6 +95,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 // v1.26: the shared check-in (RA Monitor Client 1.1.0) adds a "Check in now"
 // link and last check-in status under this plugin on the Plugins screen,
 // including a plain-language reason when a check-in fails.
+//
+// v1.27: adds a "Phone Number" field to WooCommerce > AEO Settings, used as
+// Organization.telephone in the WooCommerce-fallback seller. WooCommerce's
+// own store settings have no phone field at all, so that fallback could
+// never include one. Found on indianriverfurniture.com (2026-09-29): SEOPress
+// prints the store's full info (phone included) on the homepage only, so
+// every product page fell back to WooCommerce's address with no phone.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -177,6 +184,10 @@ function rma_register_settings() {
     add_settings_field( 'rma_update_channel_field', __( 'Update Channel', 'rma' ), 'rma_update_channel_html', 'rma-settings', 'rma_update_settings' );
     add_settings_field( 'rma_github_update_token_field', __( 'GitHub Update Token', 'rma' ), 'rma_github_update_token_html', 'rma-settings', 'rma_update_settings' );
 
+    register_setting( 'rma_settings_group', 'rma_business_phone', 'sanitize_text_field' );
+    add_settings_section( 'rma_business_settings', __( 'Store Info', 'rma' ), 'rma_business_settings_intro_html', 'rma-settings' );
+    add_settings_field( 'rma_business_phone_field', __( 'Phone Number', 'rma' ), 'rma_business_phone_html', 'rma-settings', 'rma_business_settings' );
+
     register_setting( 'rma_settings_group', 'rma_business_locations', 'sanitize_textarea_field' );
     add_settings_section( 'rma_locations_settings', __( 'Showroom Locations', 'rma' ), 'rma_locations_settings_intro_html', 'rma-settings' );
     add_settings_field( 'rma_business_locations_field', __( 'Locations', 'rma' ), 'rma_business_locations_html', 'rma-settings', 'rma_locations_settings' );
@@ -213,6 +224,28 @@ function rma_github_update_token_html() {
     } else {
         echo '<p class="description">' . esc_html__( 'This is a repository-scoped, read-only credential — it cannot access anything else in the GitHub account.', 'rma' ) . '</p>';
     }
+}
+
+function rma_business_settings_intro_html() {
+    $woo_settings_link = '<a href="' . esc_url( admin_url( 'admin.php?page=wc-settings&tab=general' ) ) . '">' . esc_html__( 'WooCommerce → Settings → General', 'rma' ) . '</a>';
+
+    /* translators: %s: link to WooCommerce > Settings > General */
+    echo '<p>' . sprintf( esc_html__( 'This is the store info Google and AI tools see on your product pages. Your store\'s address comes from %s. WooCommerce has no place for a phone number, so add it here.', 'rma' ), $woo_settings_link ) . '</p>';
+}
+
+function rma_business_phone_html() {
+    $phone = get_option( 'rma_business_phone', '' );
+
+    // Same fake-looking placeholder and "nothing saved" warning as the
+    // Showroom Locations field (see v1.19), so an empty field can't pass
+    // for a saved one.
+    echo '<input type="tel" name="rma_business_phone" value="' . esc_attr( $phone ) . '" style="width: 200px;" placeholder="555-555-5555" />';
+
+    if ( '' === trim( $phone ) ) {
+        echo '<p class="description" style="color:#a00;">' . esc_html__( 'Nothing saved yet — the gray text above is just an example. Type your real phone number and click Save Settings below.', 'rma' ) . '</p>';
+    }
+
+    echo '<p class="description">' . esc_html__( 'Type it the same way it appears on your website. If your SEO plugin already adds your store info to product pages, its phone number is used instead.', 'rma' ) . '</p>';
 }
 
 function rma_locations_settings_intro_html() {
@@ -848,7 +881,8 @@ function rma_output_standalone_product_schema() {
  * publishes elsewhere, never a second, independently-sourced copy.
  *
  * Capture priority: Yoast SEO -> Rank Math -> SEOPress -> WooCommerce store
- * address (name + address only, no phone available there) -> nothing.
+ * address (plus the AEO Settings phone number, since WooCommerce has no
+ * phone field of its own) -> nothing.
  *
  * NOT yet verified against a live site running any of these three plugins
  * (see writeup, "Verification NOT yet done") — confirm in staging that each
@@ -897,8 +931,8 @@ function rma_get_business_seller_entity() {
     // Fallback: no Yoast/Rank Math/SEOPress local business data was
     // captured on this page load. Build a minimal Organization from
     // WooCommerce's own store address settings, which exist on every
-    // WooCommerce install regardless of SEO plugin. No phone number is
-    // available from this source.
+    // WooCommerce install regardless of SEO plugin. WooCommerce has no phone
+    // field, so the phone comes from AEO Settings instead (v1.27).
     $address_parts = array_filter( array(
         get_option( 'woocommerce_store_address' ),
         get_option( 'woocommerce_store_address_2' ),
@@ -941,6 +975,11 @@ function rma_get_business_seller_entity() {
         'url'     => home_url( '/' ),
         'address' => $address,
     );
+
+    $phone = trim( (string) get_option( 'rma_business_phone', '' ) );
+    if ( '' !== $phone ) {
+        $seller['telephone'] = $phone;
+    }
 
     $seller = apply_filters( 'rma_business_seller_entity', $seller, $captured );
 
