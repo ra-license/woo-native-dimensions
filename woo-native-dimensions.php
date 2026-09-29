@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.29
+ * Version: 1.30
  * Author: Your Dev Team
  */
 
@@ -114,6 +114,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 // it never touched them — only catalog-only products (no WooCommerce offer)
 // got the full seller. Now WooCommerce's bare seller gets the full one
 // merged on top; see rma_merge_seller().
+//
+// v1.30: fixes the seller name reading "Frazier &amp; Son Furniture" on
+// frazierandsonfurniture.com (2026-09-29). WordPress saves the site name
+// HTML-encoded, and get_bloginfo( 'name' ) returns it that way; JSON-LD
+// isn't HTML, so the entity went out literally. Now decoded first.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -1008,7 +1013,7 @@ function rma_get_business_seller_entity() {
 
     $seller = array(
         '@type'   => 'Organization',
-        'name'    => get_bloginfo( 'name' ),
+        'name'    => wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES ), // v1.30: stored HTML-encoded ("&amp;")
         'url'     => home_url( '/' ),
         'address' => $address,
     );
