@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.31
+ * Version: 1.32
  * Author: Your Dev Team
  */
 
@@ -126,6 +126,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 // gate, not something upstream), and records the decision to keep
 // publishing price-less Offers despite Google flagging them — see the
 // docblock above rma_output_standalone_product_schema().
+//
+// v1.32: fixes products WITH a price getting no Product schema at all when
+// an SEO plugin removes WooCommerce's own JSON-LD. Found on StarFine
+// Furniture (2026-10-09): SEOPress PRO's "Remove default JSON-LD structured
+// data (WooCommerce 3+)" was on, so WooCommerce built the product data
+// (which told this plugin "native schema is handled, stand down") and then
+// SEOPress stopped it from printing — every priced product, including every
+// Tempur-Pedic mattress, published nothing. The fallback now checks whether
+// WooCommerce's printer is still hooked: if it isn't, this plugin prints the
+// product data WooCommerce built (with this plugin's additions) itself.
+// Also: variable products with a price range now publish an AggregateOffer
+// (lowPrice/highPrice) instead of a single lowest price.
 
 // ========================================================================
 // 0. SELF-UPDATE FROM PRIVATE GITHUB REPO
@@ -599,10 +611,32 @@ function rma_build_offer_node( $product, $on_display ) {
     }
     $offer['availability'] = 'https://schema.org/' . $availability;
 
-    $price = $product->get_price();
-    if ( '' !== $price && null !== $price ) {
-        $offer['price']         = $price;
+    // A variable product (e.g. a mattress sold in Twin through Split King)
+    // has a real price range, not one price — get_price() alone would publish
+    // only the cheapest size as if it were the price. When the sizes really
+    // differ in price, publish schema.org's AggregateOffer (lowPrice /
+    // highPrice / offerCount) instead.
+    $low  = '';
+    $high = '';
+    if ( $product->is_type( 'variable' ) && method_exists( $product, 'get_variation_price' ) ) {
+        $low  = $product->get_variation_price( 'min', false );
+        $high = $product->get_variation_price( 'max', false );
+    }
+
+    if ( '' !== $low && null !== $low && '' !== $high && null !== $high && (float) $low !== (float) $high ) {
+        $offer['@type']         = 'AggregateOffer';
+        $offer['lowPrice']      = $low;
+        $offer['highPrice']     = $high;
         $offer['priceCurrency'] = get_woocommerce_currency();
+        if ( method_exists( $product, 'get_visible_children' ) ) {
+            $offer['offerCount'] = count( $product->get_visible_children() );
+        }
+    } else {
+        $price = $product->get_price();
+        if ( '' !== $price && null !== $price ) {
+            $offer['price']         = $price;
+            $offer['priceCurrency'] = get_woocommerce_currency();
+        }
     }
 
     if ( $product->managing_stock() ) {
@@ -638,11 +672,12 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
         return $markup;
     }
 
-    // Proves WooCommerce's own generator actually ran and applied this
-    // filter for this page load. rma_output_standalone_product_schema()
-    // checks this so it only ever runs on sites where WooCommerce's native
-    // schema doesn't fire at all — never alongside a working native output,
-    // which would mean two competing Product entities on the same page.
+    // Records that WooCommerce's own generator ran this filter during this
+    // page load (for ANY product, loops included). Kept for compatibility;
+    // since v1.32 the standalone fallback decides from the page's own
+    // product markup (rma_capture_main_product_markup()) plus whether
+    // WooCommerce's printer is still hooked — "the generator ran" alone
+    // didn't prove anything reached the page.
     $GLOBALS['rma_native_product_filter_fired'] = true;
 
     $unit = get_option( 'woocommerce_dimension_unit', 'in' );
@@ -770,6 +805,76 @@ function add_native_woo_dimensions_to_structured_data( $markup, $product ) {
 }
 
 /**
+ * v1.32: remembers the FINAL Product markup WooCommerce built for the page's
+ * own product (after every plugin's filters, this one's included — hence
+ * PHP_INT_MAX), so the wp_footer fallback can print it if WooCommerce's own
+ * printer has been removed. Only the queried product counts: up-sell or
+ * related-product loops on the same page can run this same filter for other
+ * products, and those must never stand in for the main one.
+ */
+add_filter( 'woocommerce_structured_data_product', 'rma_capture_main_product_markup', PHP_INT_MAX, 2 );
+
+function rma_capture_main_product_markup( $markup, $product ) {
+    if (
+        is_array( $markup ) && ! empty( $markup )
+        && $product instanceof WC_Product
+        && function_exists( 'is_product' ) && is_product()
+        && (int) $product->get_id() === (int) get_queried_object_id()
+    ) {
+        $GLOBALS['rma_native_main_product_markup'] = $markup;
+    }
+
+    return $markup;
+}
+
+/**
+ * v1.32: is WooCommerce's own JSON-LD printer still attached to wp_footer?
+ * SEO plugins that "remove WooCommerce's schema" (SEOPress PRO's "Remove
+ * default JSON-LD structured data (WooCommerce 3+)", for one) do it by
+ * unhooking this printer — WooCommerce still BUILDS the product data (so the
+ * filters above still run), it just never reaches the page.
+ */
+function rma_wc_native_output_is_hooked() {
+    if ( ! function_exists( 'WC' ) ) {
+        return false;
+    }
+
+    $wc = WC();
+    if ( ! isset( $wc->structured_data ) || ! is_object( $wc->structured_data ) ) {
+        return false;
+    }
+
+    return false !== has_action( 'wp_footer', array( $wc->structured_data, 'output_structured_data' ) );
+}
+
+/**
+ * v1.32: does WooCommerce's own collected structured data already hold a
+ * Product node for this product? A second guard against printing a
+ * duplicate when WooCommerce's printer is hooked but the page's product
+ * couldn't be matched by ID (e.g. a translation plugin swapping IDs).
+ * WooCommerce gives every product node the @id "<permalink>#product".
+ */
+function rma_wc_data_has_product_node( $product ) {
+    if ( ! function_exists( 'WC' ) ) {
+        return false;
+    }
+
+    $wc = WC();
+    if ( ! isset( $wc->structured_data ) || ! is_object( $wc->structured_data ) || ! method_exists( $wc->structured_data, 'get_data' ) ) {
+        return false;
+    }
+
+    $id = get_permalink( $product->get_id() ) . '#product';
+    foreach ( (array) $wc->structured_data->get_data() as $node ) {
+        if ( is_array( $node ) && isset( $node['@id'] ) && $node['@id'] === $id ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
  * Converts an HTML product description into readable plain text for a
  * schema.org `description` field. A bare wp_strip_all_tags() runs every
  * cell of a table-formatted description together with no separator at all
@@ -833,6 +938,22 @@ function rma_html_to_plain_text( $html ) {
  * — is the real, first-party signal for "did WooCommerce's own generator
  * actually run," not a guess, and it's what guarantees these two code paths
  * never both emit a Product entity for the same page.
+ *
+ * v1.32: "WooCommerce's generator ran" turned out NOT to mean "WooCommerce's
+ * schema reached the page" (StarFine Furniture, 2026-10-09: SEOPress PRO
+ * unhooks WooCommerce's printer, so every priced product published nothing).
+ * The decision is now three-way, keyed on the page's own product only:
+ *   1. WooCommerce built it AND its printer is still hooked -> it printed at
+ *      priority 10, with this plugin's additions; do nothing.
+ *   2. WooCommerce built it but its printer was removed -> print that same
+ *      markup here (WooCommerce's real price/offers plus this plugin's
+ *      additions), so nothing is rebuilt or second-guessed.
+ *   3. WooCommerce never built it (no price, no reviews) -> build it from
+ *      scratch, as before.
+ * Sites that remove WooCommerce's schema on purpose to use their SEO
+ * plugin's own Product schema can turn case 2 off with the
+ * rma_print_native_product_markup filter (return false), so the page
+ * doesn't end up with two Product entities.
  */
 add_action( 'wp_footer', 'rma_output_standalone_product_schema', 20 );
 
@@ -841,12 +962,28 @@ function rma_output_standalone_product_schema() {
         return;
     }
 
-    if ( ! empty( $GLOBALS['rma_native_product_filter_fired'] ) ) {
+    $product = wc_get_product( get_the_ID() );
+    if ( ! $product instanceof WC_Product ) {
         return;
     }
 
-    $product = wc_get_product( get_the_ID() );
-    if ( ! $product instanceof WC_Product ) {
+    $native_markup = ! empty( $GLOBALS['rma_native_main_product_markup'] ) ? $GLOBALS['rma_native_main_product_markup'] : null;
+    $wc_printer_on = rma_wc_native_output_is_hooked();
+
+    // Case 1: WooCommerce already printed this product (priority 10).
+    if ( $wc_printer_on && ( $native_markup || rma_wc_data_has_product_node( $product ) ) ) {
+        return;
+    }
+
+    // Case 2: WooCommerce built it, but its printer was removed.
+    if ( $native_markup ) {
+        if ( apply_filters( 'rma_print_native_product_markup', true, $product ) ) {
+            $markup = array_merge( array( '@context' => 'https://schema.org/' ), $native_markup );
+            $markup = apply_filters( 'rma_standalone_product_structured_data', $markup, $product );
+
+            echo '<script type="application/ld+json">' . wp_json_encode( $markup, JSON_UNESCAPED_SLASHES ) . '</script>' . "\n";
+        }
+
         return;
     }
 
