@@ -1,6 +1,6 @@
 <?php
 /**
- * RA Monitor Client 1.3.3
+ * RA Monitor Client 1.4.0
  *
  * Shared by every R&A plugin, bundled into each one the same way
  * plugin-update-checker is. Once a day it sends one short check-in to
@@ -59,6 +59,15 @@
  * never sent the real update status (found Nov 12, 2026 on Slone,
  * Doughty's, Mecklenburg and ABC Retail, all on the newest version).
  *
+ * 1.4.0: after an update (plugin, theme or WordPress), the note goes out
+ * at the end of the request that ran the update, instead of 5 minutes
+ * later from WordPress's scheduler. On Nov 16, 2026 an update crashed a
+ * website (RA Promo Manager 1.69.0, a missing brace); a crashed website
+ * never runs its scheduler, so the note never went and the monitor only
+ * found it on its regular round, up to 6 hours later. The request doing the
+ * update still has the old code loaded, so it can always send. Other
+ * changes still wait 5 minutes and go together.
+ *
  * Several R&A plugins on one site each bundle a copy; whichever loads first
  * defines the class and the rest register with it, so the public API below
  * must stay backward compatible. A breaking change needs a new class name.
@@ -70,7 +79,7 @@ if ( ! class_exists( 'RA_Monitor_Client' ) ) {
 
 	class RA_Monitor_Client {
 
-		const VERSION  = '1.3.3';
+		const VERSION  = '1.4.0';
 		const ENDPOINT = 'https://help.ramarketing.com/wp-json/ra-monitor/v1/checkin';
 
 		// Must match RA_MONITOR_KEY in the RA Plugin Monitor receiver.
@@ -94,6 +103,9 @@ if ( ! class_exists( 'RA_Monitor_Client' ) ) {
 			'see-in-your-space',
 			'ra-product-image-frames',
 		);
+
+		/** 1.4.0: an update's note goes out at the end of its own request. */
+		private static $send_at_shutdown = false;
 
 		private static $plugins = array();
 		private static $booted  = false;
@@ -335,6 +347,11 @@ if ( ! class_exists( 'RA_Monitor_Client' ) ) {
 				self::report_change( 'Theme ' . $verb . ( $names ? ': ' . implode( ', ', array_slice( $names, 0, 3 ) ) : '' ) );
 			} elseif ( 'core' === $type ) {
 				self::report_change( 'WordPress updated' );
+			}
+			// 1.4.0: send at the end of this request, while it still runs.
+			if ( ! self::$send_at_shutdown ) {
+				self::$send_at_shutdown = true;
+				add_action( 'shutdown', array( __CLASS__, 'send_changes' ) );
 			}
 		}
 

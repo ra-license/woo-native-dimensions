@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.37
+ * Version: 1.38
  * Author: Your Dev Team
  */
 
@@ -201,6 +201,11 @@ RA_Monitor_Client::register( array(
     'channel'   => rma_update_channel(),
 ) );
 
+// v1.38: bundles RA Monitor Client 1.4.0 (same file as RA Promo Manager
+// 1.73.1). After a plugin, theme or WordPress update, the note to R&A's
+// Website Monitor goes out at the end of the update request instead of 5
+// minutes later, so a site an update breaks is still reported (a broken
+// site never runs the later note).
 // v1.37: bundles RA Monitor Client 1.3.3 (same file as R&A Product Image
 // Frames 0.3.5). The Plugin Monitor stops saying "No GitHub token, so it
 // can't update itself" on sites without a token: this plugin's repos are
