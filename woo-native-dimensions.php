@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Native WooCommerce Dimensions Table
  * Description: Adds a lightweight [product_dimensions] shortcode to display native WooCommerce dimensions and Materials, strictly formatted with mobile responsiveness. Also mirrors dimensions, material, on-display status, stock level, showroom location, and the business's own seller identity into the page's existing Product structured data for AI/AEO crawlers, with zero visible front-end change — including a standalone fallback for catalog-only sites with no price/stock management, so that data still reaches AI/search even when WooCommerce's own native schema doesn't fire. Adds CollectionPage/ItemList structured data to product category pages, so AI/search retrieval can see the real product count and listing without a separate crawl per product. Includes a WooCommerce admin page (AEO Preview) that fetches a product's real live page by SKU and shows the actual JSON-LD found on it. Self-updates from a private GitHub repo — see WooCommerce > AEO Settings.
- * Version: 1.39
+ * Version: 1.40
  * Author: Your Dev Team
  */
 
@@ -201,6 +201,8 @@ RA_Monitor_Client::register( array(
     'channel'   => rma_update_channel(),
 ) );
 
+// v1.40: the saved GitHub update token is never printed back into the
+// settings page (security review item 3); see rma_sanitize_github_token().
 // v1.39: bundles RA Monitor Client 1.5.0 and RA Monitor Updates 1.0.5
 // (same files as RA Promo Manager 1.74.0). The site gets a key of its own
 // for R&A's Website Monitor, proved by a call back to its own domain; the
@@ -253,7 +255,7 @@ function rma_register_settings_page() {
 
 add_action( 'admin_init', 'rma_register_settings' );
 function rma_register_settings() {
-    register_setting( 'rma_settings_group', 'rma_github_update_token', 'sanitize_text_field' );
+    register_setting( 'rma_settings_group', 'rma_github_update_token', 'rma_sanitize_github_token' );
     register_setting( 'rma_settings_group', 'rma_update_channel', 'rma_sanitize_update_channel' );
     add_settings_section( 'rma_update_settings', __( 'Auto-Update Settings', 'rma' ), 'rma_update_settings_intro_html', 'rma-settings' );
     add_settings_field( 'rma_update_channel_field', __( 'Update Channel', 'rma' ), 'rma_update_channel_html', 'rma-settings', 'rma_update_settings' );
@@ -290,10 +292,24 @@ function rma_update_channel_html() {
     }
 }
 
+// v1.40 (security review item 3): the saved token is never printed back into
+// the page. An empty box keeps it; "Remove the saved token" clears it.
+function rma_sanitize_github_token( $value ) {
+    // phpcs:ignore WordPress.Security.NonceVerification.Missing -- options.php checked the nonce.
+    if ( ! empty( $_POST['rma_github_update_token_remove'] ) ) {
+        return '';
+    }
+    $value = trim( (string) $value );
+    return '' === $value ? (string) get_option( 'rma_github_update_token', '' ) : sanitize_text_field( $value );
+}
+
 function rma_github_update_token_html() {
-    $token               = get_option( 'rma_github_update_token', '' );
+    $saved               = '' !== (string) get_option( 'rma_github_update_token', '' );
     $has_wp_config_token = defined( 'RMA_GITHUB_UPDATE_TOKEN' ) && RMA_GITHUB_UPDATE_TOKEN;
-    echo '<input type="password" name="rma_github_update_token" value="' . esc_attr( $token ) . '" style="width: 350px;" autocomplete="off" placeholder="github_pat_..." />';
+    echo '<input type="password" name="rma_github_update_token" value="" style="width: 350px;" autocomplete="new-password" placeholder="' . esc_attr( $saved ? __( 'Saved. Paste a new token to replace it.', 'rma' ) : 'github_pat_...' ) . '" />';
+    if ( $saved ) {
+        echo '<label style="display:block;margin-top:6px;"><input type="checkbox" name="rma_github_update_token_remove" value="1" /> ' . esc_html__( 'Remove the saved token', 'rma' ) . '</label>';
+    }
     if ( $has_wp_config_token ) {
         echo '<p class="description">' . esc_html__( 'A token defined in wp-config.php is already active and takes priority over this field.', 'rma' ) . '</p>';
     } else {
